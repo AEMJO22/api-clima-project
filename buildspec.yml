@@ -3,7 +3,7 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.8  # Usa la versión de Python que necesites
+      python: 3.8 
     commands:
       - apt-get update -y
       - apt-get install -y apache2
@@ -26,8 +26,8 @@ phases:
       - mkdir -p deploy
       - cp index.html deploy/
       - cp appspec.yml deploy/
-      - cp -r scripts/ deploy/  # Incluye scripts necesarios para la instalación
-
+      - cp -r scripts/ deploy/  
+      -
 artifacts:
   files:
     - deploy/**/*
