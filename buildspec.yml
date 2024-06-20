@@ -3,22 +3,22 @@ version: 0.2
 phases:
   install:
     runtime-versions:
-      python: 3.8 
+      python: 3.8
     commands:
       - apt-get update -y
       - apt-get install -y apache2
       - python -m pip install --upgrade pip
-      - pip install flake8 pytest  # Instala linter y framework de tests
+      - pip install flake8 pytest
 
   pre_build:
     commands:
       - echo "Ejecutando linter..."
-      - flake8 .  # Ejecuta flake8 en el directorio actual
+      - flake8 .
 
   build:
     commands:
       - echo "Ejecutando tests..."
-      - pytest  # Ejecuta los tests
+      - pytest
 
   post_build:
     commands:
@@ -26,8 +26,8 @@ phases:
       - mkdir -p deploy
       - cp index.html deploy/
       - cp appspec.yml deploy/
-      - cp -r scripts/ deploy/  
-      -
+      - cp -r scripts/ deploy/
+
 artifacts:
   files:
     - deploy/**/*
