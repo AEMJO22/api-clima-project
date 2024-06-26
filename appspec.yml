@@ -1,14 +1,27 @@
-version: 0.0
+version: 0.2
 os: linux
 files:
-  - source: /deploy/index.html
-    destination: /var/www/html/
+  - source: /index.html
+    destination: /var/www/html/index.html
+permissions:
+  - object: /home/ubuntu/app
+    pattern: "**"
+    owner: ubuntu
+    group: ubuntu
 hooks:
   BeforeInstall:
-    - location: deploy/scripts/install_dependencies.sh
+    - location: /before_install.sh
       timeout: 300
       runas: root
   AfterInstall:
-    - location: deploy/scripts/start_server.sh
+    - location: /after_install.sh
+      timeout: 300
+      runas: root
+  ApplicationStart:
+    - location: /start_server.sh
+      timeout: 300
+      runas: root
+  ValidateService:
+    - location: /validate_service.sh
       timeout: 300
       runas: root

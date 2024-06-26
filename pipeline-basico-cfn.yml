@@ -1,0 +1,469 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Pipeline de CI/CD con notificaciones y alarmas para AJose
+
+Parameters:
+  RepoName:
+    Type: String
+    Description: Nombre del repositorio CodeCommit
+  Environment:
+    Type: String
+    Description: Entorno de implementación (dev, test, prod)
+    AllowedValues:
+      - dev
+      - test
+      - prod    
+  BranchName:
+    Type: String
+    Description: Nombre de la rama de CodeCommit
+    Default: main
+
+Resources:
+  # Parámetro SSM para el Endpoint de la instancia RDS
+  RDSInstanceEndpointParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/rds-endpoint"
+      Type: "String"
+      Value: !ImportValue RDSInstanceEndpoint-ajose
+
+  # Parámetro SSM para el DNS del Load Balancer
+  LoadBalancerDNSNameParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/load-balancer-dns"
+      Type: "String"
+      Value: !ImportValue LoadBalancer-DNS-ajose
+
+  # Parámetro SSM para el Nombre de la Instancia EC2
+  EC2InstanceNameParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/ec2-instance-name"
+      Type: "String"
+      Value: !ImportValue ec2-ajose
+
+  # Parámetro SSM para el Nombre del Bucket S3
+  BucketNameParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/bucket-name"
+      Type: "String"
+      Value: !ImportValue ajosebucket
+
+  # Parámetro SSM para el ARN del secreto de credenciales de base de datos
+  RDSDBCredentialsSecretArnParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/rds-db-credentials-arn"
+      Type: "String"
+      Value: !ImportValue RDSDBCredentialsSecretArn
+
+  # Parámetro SSM para la API Key
+  ApiKeyParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/api-key"
+      Type: "String"
+      Value: !ImportValue ApiKey-ajose
+
+  # Parámetro SSM para la Región de AWS
+  RegionParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/myapp/region"
+      Type: "String"
+      Value: !ImportValue Region-ajose
+
+  CodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref RepoName
+      RepositoryDescription: "Repositorio para el pipeline de CI/CD"
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicyAjose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParameterHistory
+                  - ssm:DescribeParameters
+                  - secretsmanager:GetSecretValue
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:ListBucket
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchPutTestCases
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:ListBranches
+                  - codecommit:ListRepositories
+                  - codecommit:UploadArchive
+                Resource: !GetAtt CodeCommitRepo.Arn
+
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeDeployPolicyAjose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}/*"
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+              - Effect: Allow
+                Action:
+                  - autoscaling:*
+                  - cloudformation:*
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - iam:PassRole
+                  - s3:*
+                  - sns:*
+                  - sqs:*
+                Resource: 
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketTagging
+                  - s3:PutBucketTagging
+                Resource: !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:ListBranches
+                  - codecommit:ListRepositories
+                Resource: !GetAtt CodeCommitRepo.Arn
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePolicyAjose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}/*"
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:ListBranches
+                  - codecommit:ListRepositories
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus                  
+                Resource: 
+                  - !GetAtt CodeCommitRepo.Arn
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetApplicationRevision
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeRegions
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                Resource: "*"
+                  
+
+  CodeCommitRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codecommit.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeCommitAccessS3
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketVersioning
+                Resource: 
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}/*"
+        - PolicyName: CodeCommitAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:GitClone
+                  - codecommit:GitPush
+                  - codecommit:ListRepositories
+                Resource: "*"
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref RepoName
+                BranchName: !Ref BranchName
+              RunOrder: 1
+
+
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Sub "${RepoName}-CodeBuild"
+              RunOrder: 1
+
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeploy
+                Version: 1
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Ref DeploymentGroup
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !ImportValue ajosebucket 
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${RepoName}-CodeBuild"
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn  
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        EnvironmentVariables:
+          - Name: DB_HOST
+            Type: PARAMETER_STORE
+            Value: "/myapp/rds-endpoint"
+          - Name: LOAD_BALANCER_DNS
+            Type: PARAMETER_STORE
+            Value: "/myapp/load-balancer-dns"
+          - Name: EC2_INSTANCE_NAME
+            Type: PARAMETER_STORE
+            Value: "/myapp/ec2-instance-name"
+          - Name: BUCKET_NAME
+            Type: PARAMETER_STORE
+            Value: "/myapp/bucket-name"
+          - Name: DB_SECRET_ARN
+            Type: PARAMETER_STORE
+            Value: "/myapp/rds-db-credentials-arn"
+          - Name: API_KEY
+            Type: PARAMETER_STORE
+            Value: "/myapp/api-key"
+          - Name: REGION_NAME
+            Type: PARAMETER_STORE
+            Value: "/myapp/region"
+          - Name: DB_NAME
+            Value: "AjoseDB"
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 10
+
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${RepoName}-CodeDeployapp-ajose"
+
+  DeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+      Ec2TagSet:
+        Ec2TagSetList:
+          - Ec2TagGroup:
+              - Key: Name
+                Value: !ImportValue ec2-ajose
+                Type: KEY_AND_VALUE
+      DeploymentStyle:
+        DeploymentType: IN_PLACE
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      LoadBalancerInfo:
+        TargetGroupInfoList:
+          - Name: !Sub "${RepoName}-tg"
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${RepoName}-alerts"
+      Subscription:
+        - Endpoint: 'alexisjose25@gmail.com'
+          Protocol: email
+
+  BuildFailAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${RepoName}-build-fail"
+      MetricName: FailedBuilds
+      Namespace: AWS/CodeBuild
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref SNSTopic
+      Dimensions:
+        - Name: ProjectName
+          Value: !Sub "${RepoName}-CodeBuild"
+
+  DeployFailAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${RepoName}-deploy-fail"
+      MetricName: FailedDeployments
+      Namespace: AWS/CodeDeploy
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref SNSTopic
+      Dimensions:
+        - Name: ApplicationName
+          Value: !Ref CodeDeployApplication
+    
+    # Log groups para CodeBuild y CodePipeline
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub "/aws/codebuild/${RepoName}-CodeBuild"
+      RetentionInDays: 7
+  
+  CodePipelineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub "/aws/codepipeline/${RepoName}-CodePipeline"
+      RetentionInDays: 7
+
+Outputs:
+  PipelineName:
+    Description: Nombre del CodePipeline
+    Value: !Ref Pipeline
+
+  PipelineRoleArn:
+    Description: ARN del rol del CodePipeline
+    Value: !GetAtt CodePipelineServiceRole.Arn
+
+  CodeCommitRepositoryHttpUrl:
+    Description: URL HTTP del repositorio de CodeCommit
+    Value: !GetAtt CodeCommitRepo.CloneUrlHttp

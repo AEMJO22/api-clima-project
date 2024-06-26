@@ -1,3 +1,3 @@
 #!/bin/bash
-systemctl start apache2
-systemctl enable apache2
+echo "ApplicationStart script executed."
+sudo service apache2 start

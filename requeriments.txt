@@ -1,0 +1,9 @@
+# Bibliotecas básicas para el proyecto
+requests
+boto3
+pytest
+cfn-lint
+pymysql
+pylint
+aws-sam-cli==1.72.0
+tomlkit==0.7.2
