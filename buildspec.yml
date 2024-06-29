@@ -4,31 +4,25 @@ phases:
     runtime-versions:
       python: 3.9
     commands:
-      - echo "Installing Python dependencies..."
-  
-      - wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
-      # Actualizar lista de paquetes
-      - apt-get update -y
-
+      - echo "Installing Python dependencies..." 
+      # Actualizar e instalar pip para Python 3
+      - sudo apt-get update -y
+      - sudo apt-get install python3-pip -y
       # Instalar dependencias de Python desde requirements.txt
-      - pip install -r requeriments.txt
-
+      - sudo pip install -r requeriments.txt
   pre_build:
     commands:
       - echo "Executing pre-build commands..."
       - echo "Running linting..."
       # Ejecutar pylint para todos los archivos Python. Puse true para que no me detenga el proceso.
       - pylint *.py || true
-
   build:
     commands:
-      - echo "Executing build commands..."
-   
-
+      - echo "Executing build commands..."   
   post_build:
     commands:
       - echo "Executing post-build commands..."
-
 artifacts:
   files:
     - '**/*'
+    - 'appspec.yml'

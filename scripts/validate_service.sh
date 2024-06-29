@@ -1,7 +1,7 @@
 #!/bin/bash
 echo "ValidateService script executed."
 sleep 10
-response=$(curl --write-out "%{http_code}" --silent --output /dev/null http://localhost/index.html)
+response=$(curl --write-out "%{http_code}" --silent --output /dev/null http://localhost/index.py)
 
 if [ "$response" -eq 200 ]; then
   echo "Validación exitosa: index.html está accesible."

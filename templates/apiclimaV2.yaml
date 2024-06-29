@@ -1,0 +1,640 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack que despliega una instancia EC2, RDS, EC2 donde se consume una API, con monitoreo y alertas. Agrego encendido y apagado automatizado.
+
+#PARAMETROS
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Seleccionar el entorno (Dev, Test, Prod)
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    AllowedPattern: "^[a-zA-Z0-9]+$"
+    ConstraintDescription: "El entorno solo puede contener letras y números."    
+  InstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+    Description: Instacia EC2 Ajose
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: ID de la VPC ajose
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la primera subnet privada ajose
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la segunda subnet privada ajose
+  SubnetId3:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la tercera subnet privada ajose
+  SubnetId1ELB:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la primera subnet privada ajose
+  SubnetId2ELB:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la segunda subnet privada ajose
+  SubnetId3ELB:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID de la tercera subnet privada ajose
+  AMIId:
+    Type: AWS::EC2::Image::Id
+    Description: ID de la AMI que se utilizara para la instancia EC2
+    Default: ami-04b70fa74e45c3917
+  DBMasterUsername:
+    Type: String
+    Description: Nombre de usuario MASTER para la base de datos
+  DBMasterUserPassword:
+    Type: String
+    NoEcho: true
+    Description: Contraseña del usuario MASTER para la base de datos
+  DBName:
+    Type: String
+    Description: Nombre de la base de datos
+  BucketName:
+    Type: String
+    Description: Nombre del bucket S3
+    Default: s3-bucket-ajose
+  ApiKeyParameter:
+    Type: String
+    Description: API Key para acceder a la API del clima
+    Default: i2d01hqnc3s6abwxvgo8opplrkh1jujiddbntylt
+  RegionParameter:
+    Description: AWS Region
+    Type: String
+    Default: us-east-1
+    AllowedValues:
+      - us-east-1
+      - us-west-1
+      - us-west-2
+      - eu-west-1
+
+Conditions:
+  IsDev: !Equals [!Ref Environment, dev]
+  IsTest: !Equals [!Ref Environment, test]
+  IsProd: !Equals [!Ref Environment, prod]
+
+  # Instancias
+Resources:
+  
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: !If [IsProd, db.t3.medium, db.t3.micro]
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceIdentifier: !Sub MySQL-DBInstance-${Environment}-Ajose
+      DBName: !Ref DBName
+      AllocatedStorage: 20
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword      
+      VPCSecurityGroups:
+        - !Ref SecurityGroupRDS
+      Tags:
+        - Key: Entorno
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub "RDS-${Environment}"
+
+  Ec2InstanceAjose:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref SecurityGroupEC2
+      ImageId: !Ref AMIId
+      SubnetId: !Ref SubnetId1     
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe  
+          sudo apt-get update
+          sudo apt-get install -y ruby wget           
+          wget https://aws-codedeploy-us-east-1.s3.amazonaws.com/latest/install
+          chmod +x ./install
+          sudo ./install auto  
+          sudo systemctl start codedeploy-agent
+          sudo systemctl enable codedeploy-agent        
+          #instala ssm-agent
+          sudo apt-get install -y amazon-ssm-agent          
+          sudo snap start amazon-ssm-agent 
+          #Instalo AWS CLI
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install         
+      Tags:
+        - Key: Name
+          Value: !Sub "ec2-ajose"
+        - Key: Entorno
+          Value: !Ref Environment      
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+      InstanceProfileName: !Sub EC2InstanceProfile-${Environment}
+
+  #ALARMAS
+  EC2AlarmHighCPU:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: EC2HighCPUAlarm-ajose
+      AlarmDescription: Alarma que se activa cuando EC2 se excede el 90% de CPU por 5 minutos
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref Ec2InstanceAjose
+      Statistic: Average
+      Period: 300
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref SNSTopic
+      OKActions:
+        - !Ref SNSTopic
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub "Alarm-EC2-CPU-${Environment}"
+  
+  RDSAlarmHighCPU:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: RDSHighCPUAlarm-ajose
+      AlarmDescription: Alarma que se activa cuando la DB se excede el 90% de CPU por 5 minutos
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DBInstance
+      Statistic: Average
+      Period: 300
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref SNSTopic
+      OKActions:
+        - !Ref SNSTopic
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Name
+          Value: !Sub "Alarm-RDS-CPU-${Environment}"
+
+  #SECRETSMANAGER
+  RDSDBCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Secret for RDS DB credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${BucketName}-${Environment}
+      Tags:
+        - Key: Entorno
+          Value: !Ref Environment
+        - Key: Nombre
+          Value: !Sub "S3Bucket-${Environment}"
+
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - codedeploy.amazonaws.com
+                - codepipeline.amazonaws.com
+                - codecommit.amazonaws.com
+            Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket   
+                  - s3:GetBucketLocation  
+                  - s3:GetEncryptionConfiguration
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads 
+            Resource:
+              - !Sub "arn:aws:s3:::${BucketName}-${Environment}"
+              - !Sub "arn:aws:s3:::${BucketName}-${Environment}/*"
+              
+
+
+  #ELB    
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ALB-${Environment}-Ajose
+      Subnets:
+        - !Ref SubnetId1ELB
+        - !Ref SubnetId2ELB
+        - !Ref SubnetId3ELB
+      SecurityGroups:
+        - !Ref SecurityGroupALB
+      Scheme: internet-facing
+      Tags:
+        - Key: Entorno
+          Value: !Ref Environment
+        - Key: Nombre
+          Value: !Sub "ELB-${Environment}"
+
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ALBTargetGroup-${Environment}-Ajose
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+  
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  #LOG GROUPS
+  LogGroupEc2:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${Ec2InstanceAjose}-${Environment}Ajose-Logs"
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub EC2-LogGroup-${Environment}
+
+  LogGroupRDS:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${DBInstance}-${Environment}-Ajose-Logs"
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: !Sub RDS-LogGroup-${Environment}
+  #SUBNETS
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet Group para la instancia RDS Ajose
+      SubnetIds:
+        - !Ref SubnetId1
+        - !Ref SubnetId2
+        - !Ref SubnetId3
+  
+  #SEGURITIY GROUPS
+  SecurityGroupEC2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permitir SSH y HTTP a la instancia EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref SecurityGroupALB
+        - IpProtocol: tcp
+          FromPort: 22  # Puerto SSH
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0 
+  SecurityGroupALB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permitir acceso al Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0        
+
+
+  SecurityGroupRDS:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permitir acceso a la base de datos RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SecurityGroupEC2
+
+
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SNSTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SNSTopic
+  
+  # ROLES IAM
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - rds:StartDBInstance
+                  - rds:StopDBInstance
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole        
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}"
+                  - !Sub "arn:aws:s3:::s3-bucket-ajose-${Environment}/*"
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:GetLogEvents
+                Resource: "*"
+        - PolicyName: LambdaRDSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:StartDBInstance
+                  - rds:StopDBInstance
+                  - rds:ModifyDBInstance
+                  - rds:Connect
+                Resource: "*"
+        - PolicyName: LambdaSecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecrets
+                  - kms:Decrypt
+                Resource: "*"
+        - PolicyName: CodeCommitAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:ListRepositories
+                  - codecommit:GetRepository
+                  - codecommit:BatchGetRepositories
+                Resource: "*"
+        - PolicyName: EC2SSMPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:StartSession
+                  - ssm:DescribeInstanceInformation
+                  - ssm:GetCommandInvocation
+                  - ssm:ListInstanceAssociations
+                  - ssm:ListCommandInvocations
+                  - ssm:SendCommand
+                  - ssm:DescribeSessions
+                  - ssm:GetParameters
+                  - ssm:GetInventory
+                  - ssm:GetDocument
+                  - ssm:DescribeDocument
+                  - ssm:DescribeAssociation
+                  - ssm:DescribeDocumentPermission
+                Resource: "*"
+        - PolicyName: EC2CodeDeployRole
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action: 
+                  - codedeploy:*
+                Resource: "*"
+        - PolicyName: AmazonSSMManagedInstanceCore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:*
+                  - ec2messages:*
+                  - cloudwatch:PutMetricData
+                  - logs:*
+                  - autoscaling:*
+                  - kms:*                 
+                Resource: "*"
+      ManagedPolicyArns:
+            - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+            - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+            - arn:aws:iam::aws:policy/CloudWatchActionsEC2Access
+
+# NOTIFICACIONES                  
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub SNSTopic-Ajose-${Environment}
+      DisplayName: Alerta-Ajose
+      Subscription:
+        - Endpoint: 'alexisjose25@gmail.com'
+          Protocol: email
+
+######## ENCENDIDO Y APAGADO AUTOMATICO ############
+  StartStopLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub StartStopInstances-${Environment}
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.8
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+
+          ec2 = boto3.client('ec2')
+          rds = boto3.client('rds')
+
+          def handler(event, context):
+              action = event['action']
+              instance_ids = [os.environ['EC2_INSTANCE_ID']]
+              db_instance_id = os.environ['RDS_INSTANCE_ID']
+              
+              if action == 'start':
+                  ec2.start_instances(InstanceIds=instance_ids)
+                  rds.start_db_instance(DBInstanceIdentifier=db_instance_id)
+              elif action == 'stop':
+                  ec2.stop_instances(InstanceIds=instance_ids)
+                  rds.stop_db_instance(DBInstanceIdentifier=db_instance_id)
+
+      Environment:
+        Variables:
+          EC2_INSTANCE_ID: !Ref Ec2InstanceAjose
+          RDS_INSTANCE_ID: !Ref DBInstance
+
+  StartInstancesRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: cron(0 17 * * ? *) # Prende a las 14:00
+      Targets:
+        - Arn: !GetAtt StartStopLambda.Arn
+          Id: StartInstances
+          Input: '{"action": "start"}'
+
+  StopInstancesRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: cron(0 20 * * ? *) # Apaga a las 16:00
+      Targets:
+        - Arn: !GetAtt StartStopLambda.Arn
+          Id: StopInstances
+          Input: '{"action": "stop"}'
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StartStopLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt StartInstancesRule.Arn
+
+  PermissionForEventsToInvokeLambda2:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StartStopLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt StopInstancesRule.Arn
+
+#SALIDAS
+Outputs:    
+  LoadBalancerDNSName:
+    Description: DNS del Load Balancer 
+    Value: !GetAtt LoadBalancer.DNSName       
+    Export:
+      Name: LoadBalancer-DNS-ajose
+
+  EC2InstanceName:
+    Value: !Ref Ec2InstanceAjose
+    Description: Nombre de la Instancia EC2
+    Export:
+      Name: ec2-ajose
+      
+  BucketName:
+    Value: !Ref Bucket
+    Description: Nombre del bucket S3 para almacenar artefactos del despliegue
+    Export:
+      Name: ajosebucket
+
+  RDSDBCredentialsSecretArn:
+    Description: ARN del secreto de credenciales de base de datos
+    Value: !Ref RDSDBCredentialsSecret
+    Export:
+      Name: RDSDBCredentialsSecretArn
+
+  ApiKey:
+    Description: API Key para acceder a la API del clima
+    Value: !Ref ApiKeyParameter
+    Export:
+      Name: ApiKey-ajose
+
+  Region:
+    Description: Región de AWS
+    Value: !Ref RegionParameter
+    Export:
+      Name: Region-ajose
+
+  TGroupAjose:
+    Description: Target Group Ajose
+    Value: !GetAtt ALBTargetGroup.TargetGroupName 
+    Export:
+     Name: LoadBalancer-ajose
+  DBHostAjose:
+    Description: Endpoint de la instancia RDS
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: DB-HOST 
