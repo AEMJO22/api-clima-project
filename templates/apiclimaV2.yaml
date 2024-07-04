@@ -633,6 +633,7 @@ Outputs:
     Value: !GetAtt ALBTargetGroup.TargetGroupName 
     Export:
      Name: LoadBalancer-ajose
+     
   DBHostAjose:
     Description: Endpoint de la instancia RDS
     Value: !GetAtt DBInstance.Endpoint.Address
